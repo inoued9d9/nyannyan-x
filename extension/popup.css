@@ -1,0 +1,16 @@
+body { width: 320px; margin: 0; color: #183a31; background: #f5faf7; font: 14px/1.7 system-ui, "Yu Gothic UI", sans-serif; }
+main { padding: 22px; }
+h1 { font-size: 21px; margin: 8px 0 20px; }
+.eyebrow { font-size: 10px; letter-spacing: .1em; color: #537367; }
+.toggle { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+input { width: 20px; height: 20px; accent-color: #23795d; }
+.note, .fine { font-size: 12px; color: #536b61; }
+.status { border-radius: 10px; padding: 12px; background: #dfefe5; }
+a { color: #126346; font-weight: 700; }
+button { border: 1px solid #93b8a7; border-radius: 10px; padding: 8px; background: white; color: #183a31; cursor: pointer; margin: 0 0 16px; }
+.toggle { gap: 16px; }
+.toggle input { flex: 0 0 auto; }
+#counts { font-size: 12px; }
+input:focus-visible, a:focus-visible { outline: 3px solid #23795d; outline-offset: 4px; }
+#open-settings { width: 100%; background: #23795d; color: white; font: inherit; font-weight: 700; }
+[hidden] { display: none !important; }

@@ -1,0 +1,21 @@
+{
+  "name": "x-nyan-filter",
+  "version": "0.6.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Beta X filter with single-question discomfort scoring and compact cats",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "demo": "node scripts/serve.mjs",
+    "test:browser": "node scripts/browser-tests.cjs",
+    "test:extension": "node scripts/extension-tests.cjs",
+    "check": "node scripts/check.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
+    "test:quotes": "node scripts/quote-tests.cjs",
+    "test:auto": "node scripts/auto-tests.cjs",
+    "audit:public": "node scripts/audit-public.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": { "playwright": "1.62.1" }
+}

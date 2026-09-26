@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "にゃーんフィルター β",
+  "version": "0.6.0",
+  "description": "HTML上の制限表示を確認して日本語本文をJevで自動判定するβ版。高スコアを猫表示にし、引用先は送信しません。公開性は保証しません。",
+  "permissions": ["storage"],
+  "optional_host_permissions": ["https://api.typesafe.ai/*"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_popup": "popup.html", "default_title": "にゃーんフィルター" },
+  "content_scripts": [{
+    "matches": ["https://x.com/*"],
+    "js": ["policy.js", "jev-core.js", "adapter.js", "filter.js", "content.js"],
+    "css": ["filter.css"],
+    "run_at": "document_start",
+    "all_frames": false
+  }],
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://api.typesafe.ai; object-src 'none'; base-uri 'none'; form-action 'none'"
+  }
+}

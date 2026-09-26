@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>にゃんフィルター — ローカル評価デモ</title>
+  <link rel="stylesheet" href="demo.css">
+  <link rel="stylesheet" href="filter.css">
+  <script src="policy.js" defer></script>
+  <script src="jev-core.js" defer></script>
+  <script src="adapter.js" defer></script>
+  <script src="filter.js" defer></script>
+  <script src="demo.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="navigation" aria-label="デモの操作">
+      <a class="brand" href="demo.html" aria-label="にゃんフィルター デモホーム">
+        <span class="cat-mark" aria-hidden="true"><span>··</span></span>
+        <span>にゃんフィルター<small>LOCAL PREVIEW</small></span>
+      </a>
+
+      <div class="workspace-label">プレビュー画面</div>
+      <nav class="view-navigation" aria-label="対象画面の切り替え">
+        <button type="button" class="nav-item selected" data-view="home" aria-current="page"><span aria-hidden="true">⌂</span>ホーム<span class="nav-caption">HOME</span></button>
+        <button type="button" class="nav-item" data-view="replies"><span aria-hidden="true">↳</span>リプライ<span class="nav-caption">REPLIES</span></button>
+        <button type="button" class="nav-item" data-view="search"><span aria-hidden="true">⌕</span>検索<span class="nav-caption">SEARCH</span></button>
+        <button type="button" class="nav-item" data-view="dm"><span aria-hidden="true">✉</span>DM<span class="nav-caption">対象外</span></button>
+      </nav>
+
+      <section class="control-card" aria-labelledby="control-heading">
+        <div class="card-eyebrow">LOCAL FILTER</div>
+        <h2 id="control-heading">見せ方を、やさしく。</h2>
+        <p>対象外の投稿はそのまま。候補の「置換をテスト」で、猫の表示を確認。</p>
+        <button type="button" class="toggle-control" id="filter-toggle" aria-pressed="true"><span id="toggle-label">フィルター ON</span><span class="toggle-track" aria-hidden="true"><span></span></span></button>
+        <div class="control-actions">
+          <button type="button" class="text-button" id="remask">表示テストを解除 <span aria-hidden="true">↻</span></button>
+          <button type="button" class="text-button" id="add-post">架空投稿を追加 <span aria-hidden="true">＋</span></button>
+        </div>
+      </section>
+
+      <div class="local-note"><span class="local-dot" aria-hidden="true"></span><div>このデモは端末内で完結<small>APIキー・ログインは不要</small></div></div>
+      <p class="navigation-footnote">実在のアカウントや投稿は<br>使用していません。</p>
+    </aside>
+
+    <div class="timeline-column">
+      <header class="timeline-header">
+        <div class="header-topline"><span class="eyebrow">YOUR QUIETER TIMELINE</span><span class="phase-badge">PHASE 1</span></div>
+        <h1 id="view-title">いつもの画面に、<br><span>少しの余白を。</span></h1>
+        <p id="view-description">日本語の架空投稿で、送信前の保護動作を確認できます。</p>
+        <div class="scope-strip"><span class="scope-dot" aria-hidden="true"></span>このデモは外部API送信なし<span aria-hidden="true">·</span>表示テスト</div>
+      </header>
+
+      <div class="feed-heading"><h2 id="feed-title">ホームタイムライン</h2><span class="feed-mode" id="filter-state">フィルター稼働中</span></div>
+      <main id="timeline" data-nyan-root aria-label="架空の投稿タイムライン" aria-busy="false"></main>
+      <section class="dm-view" id="dm-view" data-nyan-excluded="dm" hidden aria-labelledby="dm-view-title">
+        <div class="dm-illustration" aria-hidden="true">✉</div>
+        <h2 id="dm-view-title">会話は、このフィルターの対象外。</h2>
+        <p>DM画面では投稿の読み取り・判定・置換を行いません。これは対象画面の切り替えを確かめるための、架空の画面です。</p>
+        <div class="example-chat"><span class="avatar avatar-mint" aria-hidden="true">凪</span><div><strong>凪</strong><p>明日の待ち合わせ、10時で大丈夫？</p><small>架空のDM / 置換対象外</small></div></div>
+      </section>
+      <div class="feed-end"><span aria-hidden="true">—</span> このタイムラインは、すべて架空です。 <span aria-hidden="true">—</span></div>
+    </div>
+
+    <aside class="inspector" aria-label="デモの検証情報">
+      <section class="privacy-card" aria-labelledby="privacy-heading">
+        <div class="card-eyebrow">PRIVACY FIRST</div>
+        <h2 id="privacy-heading">送る前に、守る。</h2>
+        <p>公開性を確認できない投稿も<br>保護対象に含めます。</p>
+        <div class="transmission-count"><strong>0</strong><div>外部API送信<small>このデモはJevに接続しません</small></div></div>
+        <div class="privacy-rule"></div>
+        <div class="metric"><span>現在のマスク</span><strong id="stat-masked">0</strong></div>
+        <div class="metric"><span>限定公開を示す情報あり</span><strong id="stat-restricted">0</strong></div>
+        <div class="metric"><span>公開性不明</span><strong id="stat-unknown">0</strong></div>
+        <div class="metric"><span>公開の架空サンプル</span><strong id="stat-public">0</strong></div>
+      </section>
+
+      <section class="guide-card" aria-labelledby="guide-heading">
+        <h2 id="guide-heading">この評価版で確かめること</h2>
+        <ol class="guide-list">
+          <li><span>01</span><div><strong>対象の見極め</strong><p>ホーム・リプライ・検索を対象に。DMは対象外に。</p></div></li>
+          <li><span>02</span><div><strong>明示的な置換テスト</strong><p>候補のボタンで鳴き声と「ねこ」に。実際の不快感判定はしません。</p></div></li>
+          <li><span>03</span><div><strong>対象外は原文のまま</strong><p>未判定の理由を表示。テスト表示はいつでも解除できます。</p></div></li>
+        </ol>
+      </section>
+
+      <aside class="dm-preview" data-nyan-excluded="dm" aria-label="読み取り対象外の架空DMパネル">
+        <div class="dm-preview-heading"><strong>メッセージ</strong><span>対象外</span></div>
+        <div class="mini-chat"><span class="avatar avatar-mint" aria-hidden="true">凪</span><div><strong>凪</strong><p>また明日、話そうね。</p></div></div>
+        <small>架空のDMパネル。変化しないことを確認。</small>
+      </aside>
+
+      <p class="inspector-footnote">公開サンプルの判定には、デモ専用の印を使用しています。実際のXの公開性を保証するものではありません。</p>
+    </aside>
+  </div>
+  <div class="announcement" id="announcement" role="status" aria-live="polite"></div>
+</body>
+</html>

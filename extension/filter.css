@@ -1,0 +1,77 @@
+/* Hide the whole original subtree: media, quote previews and accessibility text too. */
+/* Best-effort pre-screen cover after the user's automatic setting has loaded.
+   Exclude nested quote articles and the same DM/dialog/input regions as the adapter. */
+html[data-nyan-auto-cover] [data-testid="primaryColumn"] article[data-testid="tweet"]:not([data-nyan-screened]):not([data-nyan-inspecting]):not(article[data-testid="tweet"] *):not(:is([data-nyan-excluded],aside,nav,form,[role="dialog"],[contenteditable="true"],[data-testid*="DM"],[data-testid*="message" i],[data-testid*="chat" i])):not(:is([data-nyan-excluded],aside,nav,form,[role="dialog"],[contenteditable="true"],[data-testid*="DM"],[data-testid*="message" i],[data-testid*="chat" i]) *) > :not([data-nyan-ui]) {
+  visibility: hidden !important;
+}
+/* X's article can be a horizontal flex row. Keep our UI below the intact original. */
+article[data-nyan-attached="true"] {
+  /* Preserve the page's display value, including display:none for hidden posts. */
+  flex-direction: column !important; align-items: stretch !important;
+}
+article[data-nyan-attached="true"] > [data-nyan-ui] { flex: 0 0 auto !important; min-width: 0; max-width: 100%; }
+article[data-nyan-masked="true"]:not([data-nyan-inspecting]) > :not([data-nyan-ui]),
+article[data-nyan-holding="true"]:not([data-nyan-inspecting]) > :not([data-nyan-ui]) {
+  display: none !important;
+}
+/* Source-style inspection never uncovers a post: clip it during the synchronous
+   measurement, then restore its original mask before returning to page code. */
+article[data-nyan-inspecting] {
+  clip-path: inset(100%) !important;
+  pointer-events: none !important;
+}
+article[data-nyan-masked="true"] > [data-nyan-ui] {
+  display: flex !important;
+}
+article[data-nyan-masked="true"] {
+  min-height: 0 !important;
+}
+[data-nyan-ui] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 20px 22px;
+  color: #173d35;
+  background: #eff9f4;
+  border: 1px solid #cae4d7;
+  border-radius: 14px;
+  font: 14px/1.6 system-ui, -apple-system, "Yu Gothic UI", sans-serif;
+  text-align: left;
+  cursor: default;
+}
+[data-nyan-ui] .nyan-author { font-weight: 700; overflow-wrap: anywhere; }
+[data-nyan-ui] .nyan-message { font-size: 14px; font-weight: 600; margin: 0; white-space: nowrap; }
+[data-nyan-ui] .nyan-reason { font-size: 12px; color: #48665c; }
+[data-nyan-ui] .nyan-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+[data-nyan-ui] .nyan-badge { font-size: 11px; color: #48665c; }
+[data-nyan-ui] button {
+  font: inherit; font-size: 12px; color: #173d35; background: white;
+  border: 1px solid #93b8a7; border-radius: 20px; padding: 5px 12px; cursor: pointer;
+}
+[data-nyan-ui] button:focus-visible { outline: 3px solid #146b56; outline-offset: 3px; }
+[data-nyan-ui].nyan-card {
+  padding: 5px 10px; margin: 2px 0; border-radius: 12px; align-items: center;
+  gap: 8px; min-height: 36px; flex-wrap: wrap; background: #f9f6ed; border-color: #e8dcc5;
+}
+[data-nyan-ui] .nyan-cat { color: #ae755d; font-size: 13px; white-space: nowrap; }
+[data-nyan-ui].nyan-card .nyan-message { border-radius: 9px; background: #fffdf7; padding: 0 7px; }
+[data-nyan-ui].nyan-card .nyan-author { font-size: 11px; font-weight: 500; }
+[data-nyan-ui].nyan-card .nyan-reason { font-size: 10px; margin-left: auto; }
+[data-nyan-ui].nyan-card button { padding: 2px 7px; font-size: 10px; }
+[data-nyan-ui].nyan-waiting { background: #eff5f3; border-style: dashed; }
+[data-nyan-ui].nyan-waiting .nyan-reason { margin-left: 0; }
+[data-nyan-ui] button:disabled { opacity: .55; cursor: wait; }
+[data-nyan-ui].nyan-diagnostic {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 3px 0; margin: 2px 0 0; border: 0; border-radius: 0; background: transparent;
+  min-height: 0; line-height: 1.5;
+}
+[data-nyan-ui].nyan-diagnostic .nyan-reason { font-size: 10px; overflow-wrap: anywhere; }
+[data-nyan-ui].nyan-diagnostic button { flex: 0 0 auto; font-size: 11px; padding: 3px 8px; }
+[data-nyan-ui] .nyan-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+@media (prefers-color-scheme: dark) {
+  [data-nyan-ui] { background: #172c25; color: #ddf3e7; border-color: #365948; }
+  [data-nyan-ui] .nyan-reason, [data-nyan-ui] .nyan-badge { color: #acccbd; }
+  [data-nyan-ui].nyan-card { background: #302a24; border-color: #655546; }
+  [data-nyan-ui].nyan-card .nyan-message { background: #3e352d; }
+  [data-nyan-ui] .nyan-cat { color: #e8b798; }
+}
