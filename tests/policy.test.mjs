@@ -6,6 +6,19 @@ const context = vm.createContext({});
 vm.runInContext(fs.readFileSync(new URL('../extension/policy.js', import.meta.url), 'utf8'), context);
 const { decide, supportedPath } = context.NyanPolicy;
 
+test('automatic quota limits share a strict integer range and default of 200', () => {
+  const { AUTO_QUOTA, validAutoLimit, normalizeAutoLimit } = context.NyanPolicy;
+  assert.equal(AUTO_QUOTA.defaultLimit, 200);
+  for (const value of [1, 200, 201, 10000]) {
+    assert.equal(validAutoLimit(value), true);
+    assert.equal(normalizeAutoLimit(value), value);
+  }
+  for (const value of [undefined, null, false, '', '300', 0, -1, 1.5, 10001, NaN, Infinity]) {
+    assert.equal(validAutoLimit(value), false);
+    assert.equal(normalizeAutoLimit(value), 200);
+  }
+});
+
 test('only home, search and post conversation routes are supported', () => {
   for (const path of ['/home', '/home/', '/alice/status/123', '/i/web/status/123', '/search', '/search?q=cat&f=live']) assert.equal(supportedPath(path), true, path);
   for (const path of ['/messages', '/messages/123', '/i/chat', '/i/chat/abc', '/settings', '/compose/post', '/alice', '/search/people', '/alice/status/1/photo/1']) assert.equal(supportedPath(path), false, path);

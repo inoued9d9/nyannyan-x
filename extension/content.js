@@ -5,7 +5,14 @@
     const requestId = crypto.randomUUID();
     const cancel = () => { chrome.runtime.sendMessage({ type: 'NYAN_JEV_CANCEL', requestId }).catch(() => {}); };
     signal.addEventListener('abort', cancel, { once: true });
-    try { return await chrome.runtime.sendMessage({ type: 'NYAN_JEV_EVALUATE', requestId, ...payload }); }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'NYAN_JEV_EVALUATE', requestId, ...payload });
+      // Another tab can reserve the last slot, or the user can reset the quota
+      // while this reply is in transit. Refresh AFTER the filter handles the
+      // rejection, so a fresh positive allowance also releases AUTO_LIMIT pause.
+      if (response?.code === 'AUTO_LIMIT' && response.sent === false) setTimeout(() => { void refreshJev(); }, 0);
+      return response;
+    }
     finally { signal.removeEventListener('abort', cancel); }
   } });
   const apply = enabled => enabled ? filter.start() : filter.stop();
@@ -44,7 +51,7 @@
     if (area === 'local' && changes.autoJudgeEnabled) {
       filter.setJevReady(false); filter.setAutoJudgeEnabled(changes.autoJudgeEnabled.newValue); void refreshJev();
     }
-    if (area === 'local' && (changes.jevEnabled || changes.jevConfigRevision || changes.enabled)) void refreshJev();
+    if (area === 'local' && (changes.jevEnabled || changes.jevConfigRevision || changes.enabled || changes.autoSessionLimit)) void refreshJev();
   });
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message?.type === 'NYAN_STATUS') respond(filter.getStats());

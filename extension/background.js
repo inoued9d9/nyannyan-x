@@ -3,14 +3,13 @@ importScripts('policy.js', 'jev-core.js', 'jev-client.js');
 
 const API_ORIGIN = 'https://api.typesafe.ai/*';
 const SAMPLE = 'この説明は根拠が不足していると思います。参考資料を教えてください。';
-const AUTO_LIMIT = 200;
 const FAILURE_CODES = Object.freeze(['AUTH', 'RATE_LIMIT', 'TIMEOUT', 'NETWORK', 'INVALID_RESPONSE', 'API_ERROR', 'UNKNOWN']);
 const pending = new Map();
 const ready = chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 let transaction = Promise.resolve(), credentialEpoch = 0, credentialIntent = 0, sampleSequence = 0, revision = 0;
 let verificationDirty = false;
 
-// Serialize credential writes and quota reservations, never network requests.
+// Serialize credential writes, quota changes/resets and reservations, never network requests.
 // storage.session survives a service-worker restart but not a browser session.
 function exclusive(action) {
   const next = transaction.then(action);
@@ -21,11 +20,12 @@ function notifyRevision() {
   revision = Math.max(Date.now(), revision + 1);
   return chrome.storage.local.set({ jevConfigRevision: revision });
 }
-function autoUsed(session) {
+function autoUsed(session, limit) {
   if (session.jevAutoSentCount === undefined) return 0;
   const value = session.jevAutoSentCount;
   // Corrupt counters must not reopen the allowance.
-  return Number.isInteger(value) && value >= 0 && value <= AUTO_LIMIT ? value : AUTO_LIMIT;
+  // Counts above a newly lowered limit remain valid; never reset them implicitly.
+  return Number.isInteger(value) && value >= 0 && value <= NyanPolicy.AUTO_QUOTA.maxLimit ? value : limit;
 }
 function keyState(session) {
   if (!session.jevApiKey) return 'missing';
@@ -56,14 +56,16 @@ async function status() {
   await ready;
   const [session, local, hasPermission] = await Promise.all([
     chrome.storage.session.get(['jevApiKey', 'jevKeyState', 'jevKeyCheckedAt', 'jevAutoSentCount', 'jevLastPostError']),
-    chrome.storage.local.get({ jevEnabled: false, enabled: true, autoJudgeEnabled: false }),
+    chrome.storage.local.get({ jevEnabled: false, enabled: true, autoJudgeEnabled: false, autoSessionLimit: NyanPolicy.AUTO_QUOTA.defaultLimit }),
     chrome.permissions.contains({ origins: [API_ORIGIN] })
   ]);
   const currentKeyState = keyState(session);
+  const autoLimit = NyanPolicy.normalizeAutoLimit(local.autoSessionLimit);
+  const used = autoUsed(session, autoLimit);
   return { hasKey: Boolean(session.jevApiKey), enabled: local.jevEnabled === true,
     filterEnabled: local.enabled !== false, hasPermission, model: 'jev-1.13.0',
     keyState: currentKeyState, keyCheckedAt: ['valid', 'failed'].includes(currentKeyState) && Number.isFinite(session.jevKeyCheckedAt) ? session.jevKeyCheckedAt : null,
-    autoJudgeEnabled: local.autoJudgeEnabled === true, autoRemaining: AUTO_LIMIT - autoUsed(session),
+    autoJudgeEnabled: local.autoJudgeEnabled === true, autoLimit, autoUsed: used, autoRemaining: Math.max(0, autoLimit - used),
     lastPostError: postError(session.jevLastPostError) };
 }
 function abortWhere(predicate) {
@@ -96,7 +98,7 @@ async function evaluate(message, sender, testMode = '') {
       await ready;
       const [session, local, hasPermission] = await Promise.all([
         chrome.storage.session.get(['jevApiKey', 'jevKeyState', 'jevAutoSentCount']),
-        chrome.storage.local.get({ enabled: true, jevEnabled: false, autoJudgeEnabled: false, hideQuotes: false }),
+        chrome.storage.local.get({ enabled: true, jevEnabled: false, autoJudgeEnabled: false, hideQuotes: false, autoSessionLimit: NyanPolicy.AUTO_QUOTA.defaultLimit }),
         chrome.permissions.contains({ origins: [API_ORIGIN] })
       ]);
       if (request.controller.signal.aborted || request.epoch !== credentialEpoch) return { error: '判定を取り消しました。' };
@@ -108,8 +110,9 @@ async function evaluate(message, sender, testMode = '') {
         return { error: '自動判定の設定とキーの接続確認を確認してください。' };
       }
       if (automatic) {
-        const used = autoUsed(session);
-        if (used >= AUTO_LIMIT) return { code: 'AUTO_LIMIT', error: 'このブラウザセッションの自動判定上限に達しました。' };
+        const limit = NyanPolicy.normalizeAutoLimit(local.autoSessionLimit);
+        const used = autoUsed(session, limit);
+        if (used >= limit) return { code: 'AUTO_LIMIT', error: 'このブラウザセッションの自動判定上限に達しました。' };
         // Reserve before sending. Failed/cancelled attempts are not refunded.
         await chrome.storage.session.set({ jevAutoSentCount: used + 1 });
       }
@@ -155,6 +158,24 @@ async function handle(message, sender) {
   if (!allowed) return { ok: false, sent: false, error: '対象外の画面です。' };
   switch (message?.type) {
     case 'NYAN_JEV_STATUS': return status();
+    case 'NYAN_JEV_SET_AUTO_LIMIT': {
+      if (!options || !NyanPolicy.validAutoLimit(message.limit)) return { ok: false, sent: false };
+      await exclusive(async () => {
+        await ready;
+        await chrome.storage.local.set({ autoSessionLimit: message.limit });
+      });
+      return { ok: true };
+    }
+    case 'NYAN_JEV_RESET_AUTO_COUNT': {
+      if (!options) return { ok: false, sent: false };
+      await exclusive(async () => {
+        await ready;
+        // Reservations before this transaction belong to the previous count.
+        // Keep their requests running; completion never adds to the count again.
+        await chrome.storage.session.set({ jevAutoSentCount: 0 });
+      });
+      return { ok: true };
+    }
     case 'NYAN_JEV_SAVE_KEY': {
       if (!options || typeof message.apiKey !== 'string' || !/^[\x21-\x7e]{8,512}$/.test(message.apiKey)) return { ok: false };
       const intent = ++credentialIntent;
@@ -198,6 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   return true;
 });
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.autoSessionLimit) void notifyRevision().catch(() => {});
   if (area === 'local' && changes.hideQuotes?.newValue === true) abortWhere(request => request.isQuote);
   if (area === 'local' && changes.autoJudgeEnabled && changes.autoJudgeEnabled.newValue !== true) abortWhere(request => request.automatic);
   if (area === 'local' && ((changes.jevEnabled && changes.jevEnabled.newValue !== true) || changes.enabled?.newValue === false)) abortWhere(request => !request.sample);

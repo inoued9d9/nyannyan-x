@@ -6,7 +6,8 @@
     const document = root.ownerDocument || root;
     const records = new Map();
     let active = false, observer, timer, scheduled = false, lastPath, mockMode = false, jevReady = false;
-    let autoJudgeEnabled = false, autoTimer, autoBusy = 0, autoNextAt = 0, autoRemaining = 200, showUncertain = false, autoPausedCode = '';
+    let autoJudgeEnabled = false, autoTimer, autoBusy = 0, autoNextAt = 0, autoRemaining = NyanPolicy.AUTO_QUOTA.defaultLimit, showUncertain = false, autoPausedCode = '';
+    let quotaPauseUnsent = false;
     const autoCache = new Map();
     const inFlight = new Set();
     const errors = Object.freeze({ AUTH: '認証エラー・キーを再確認', RATE_LIMIT: 'API利用上限・時間をおいて再開',
@@ -83,17 +84,25 @@
         else {
           record.errorCode = Object.hasOwn(errors, response?.code) ? response.code : 'UNKNOWN';
           record.error = errorLabel(record.errorCode);
-          if (automatic && response?.sent === false && response?.code === 'BUSY' && (record.busyRetries || 0) < 3) {
+          if (automatic && response?.sent === false && response?.code === 'AUTO_LIMIT') {
+            // The worker rejected this before reserving/sending. Retain judged
+            // caches, but allow this one to resume after an explicit quota change.
+            record.autoAttempted = false;
+            autoCache.delete(cacheKey);
+            if (!autoPausedCode || (autoPausedCode === 'AUTO_LIMIT' && quotaPauseUnsent)) {
+              autoPausedCode = 'AUTO_LIMIT'; quotaPauseUnsent = true;
+            }
+          } else if (automatic && response?.sent === false && response?.code === 'BUSY' && (record.busyRetries || 0) < 3) {
             record.busyRetries = (record.busyRetries || 0) + 1;
             record.autoAttempted = false; record.autoNotBefore = Date.now() + 1500;
             autoCache.delete(cacheKey);
-          } else if (automatic) autoPausedCode = record.errorCode;
+          } else if (automatic) { autoPausedCode = record.errorCode; quotaPauseUnsent = false; }
         }
         if (automatic && record.autoAttempted) rememberAuto(identity, text, record);
       } catch {
         if (stillCurrent(record, operation)) {
           record.errorCode = 'UNKNOWN'; record.error = errorLabel('UNKNOWN');
-          if (automatic) autoPausedCode = 'UNKNOWN';
+          if (automatic) { autoPausedCode = 'UNKNOWN'; quotaPauseUnsent = false; }
           if (automatic) rememberAuto(identity, text, record);
         }
       } finally {
@@ -303,7 +312,13 @@
     function setShowUncertain(value) { showUncertain = value === true; refresh(); }
     // Quota blocks only new work. Never cancel the request that reserved the last slot.
     function setAutoRemaining(value) {
-      autoRemaining = Number.isInteger(value) && value >= 0 && value <= 200 ? value : 0;
+      autoRemaining = Number.isInteger(value) && value >= 0 && value <= NyanPolicy.AUTO_QUOTA.maxLimit ? value : 0;
+      if (autoRemaining > 0 && autoPausedCode === 'AUTO_LIMIT' && quotaPauseUnsent) {
+        autoPausedCode = ''; quotaPauseUnsent = false;
+        for (const record of records.values()) if (record.errorCode === 'AUTO_LIMIT' && !record.autoAttempted) {
+          record.errorCode = ''; record.error = '';
+        }
+      }
       refresh();
     }
     function setAutoJudgeEnabled(value) {
@@ -314,7 +329,7 @@
         if (record.pending?.automatic) invalidate(record);
         record.autoAttempted = false; record.revealed = false;
       }
-      if (next) { autoCache.clear(); autoPausedCode = ''; }
+      if (next) { autoCache.clear(); autoPausedCode = ''; quotaPauseUnsent = false; }
       updateCover(); refresh();
     }
     function setHideQuotes(value) {

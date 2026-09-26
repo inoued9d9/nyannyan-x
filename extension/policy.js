@@ -1,5 +1,10 @@
 (() => {
   'use strict';
+  const AUTO_QUOTA = Object.freeze({ defaultLimit: 200, minLimit: 1, maxLimit: 10000 });
+  function validAutoLimit(value) {
+    return Number.isInteger(value) && value >= AUTO_QUOTA.minLimit && value <= AUTO_QUOTA.maxLimit;
+  }
+  const normalizeAutoLimit = value => validAutoLimit(value) ? value : AUTO_QUOTA.defaultLimit;
   const reasons = Object.freeze({
     protected: '対象外：非公開の表示を検出',
     subscribers: '対象外：購読者限定の表示を検出',
@@ -46,5 +51,5 @@
     for (const character of String(key)) hash = Math.imul(hash ^ character.codePointAt(0), 16777619) >>> 0;
     return cries[hash % cries.length];
   }
-  globalThis.NyanPolicy = Object.freeze({ supportedPath, decide, cryFor, cries });
+  globalThis.NyanPolicy = Object.freeze({ supportedPath, decide, cryFor, cries, AUTO_QUOTA, validAutoLimit, normalizeAutoLimit });
 })();

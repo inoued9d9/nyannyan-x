@@ -5,6 +5,13 @@ const keyForm = document.getElementById('key-form');
 const enabledInput = document.getElementById('jev-enabled');
 const autoJudgeInput = document.getElementById('auto-judge-enabled');
 const autoStatus = document.getElementById('auto-status');
+const quotaForm = document.getElementById('auto-quota-form');
+const quotaInput = document.getElementById('auto-session-limit');
+const saveQuotaButton = document.getElementById('save-auto-limit');
+const resetQuotaButton = document.getElementById('reset-auto-count');
+const quotaStatus = document.getElementById('auto-quota-status');
+const quotaFeedback = document.getElementById('auto-quota-feedback');
+let quotaDirty = false;
 const keyStateBadge = document.getElementById('key-state-badge');
 const keyCheckedAt = document.getElementById('key-checked-at');
 const saveKeyButton = document.getElementById('save-key');
@@ -77,6 +84,8 @@ function updateControls() {
   textTestButton.disabled = testButton.disabled || !displayReady || displayBusy;
   testTextInput.disabled = busy;
   refreshButton.disabled = busy;
+  for (const control of [quotaInput, saveQuotaButton, resetQuotaButton]) control.disabled = busy || !status;
+  quotaForm.setAttribute('aria-busy', String(busy));
   keyForm.setAttribute('aria-busy', String(busy || checking));
   for (const control of [allowRevealInput, hideQuotesInput, showUncertainInput, thresholdInput, thresholdRange]) {
     control.disabled = busy || displayBusy || !displayReady;
@@ -240,6 +249,7 @@ function showUnavailable() {
   enabledInput.checked = false;
   autoJudgeInput.checked = false;
   autoStatus.textContent = '自動判定の状態を確認できません。';
+  quotaStatus.textContent = '使用件数と上限を確認できません。「状態を再確認」を押してください。';
   showKeyState('unknown');
   updateControls();
 }
@@ -251,7 +261,9 @@ async function refreshStatus() {
     if (request !== statusRequest) return false;
     if (!response || ['enabled', 'hasKey', 'hasPermission', 'autoJudgeEnabled'].some(key => typeof response[key] !== 'boolean') ||
         !Object.hasOwn(KEY_STATES, response.keyState) || !Number.isInteger(response.autoRemaining) ||
-        response.autoRemaining < 0 || response.autoRemaining > 200) {
+        !NyanPolicy.validAutoLimit(response.autoLimit) || !Number.isInteger(response.autoUsed) ||
+        response.autoUsed < 0 || response.autoUsed > NyanPolicy.AUTO_QUOTA.maxLimit ||
+        response.autoRemaining !== Math.max(0, response.autoLimit - response.autoUsed)) {
       throw new Error('Invalid status');
     }
     status = response;
@@ -277,11 +289,15 @@ async function refreshStatus() {
     } else {
       connectionStatus.textContent = '個別の確認操作で判定できます。自動判定の状態は下で確認してください。';
     }
-    const remaining = `このセッションの自動判定: 残り ${status.autoRemaining} / 200 件（全タブ合計・失敗や中止も消費）`;
+    const remaining = `このセッションの自動判定: 残り ${status.autoRemaining} / ${status.autoLimit} 件（全タブ合計・失敗や中止も消費）`;
     const autoState = !status.autoJudgeEnabled ? '自動判定はOFFです。' : status.keyState !== 'valid' ? '自動判定は接続確認済みのキーを待っています。' :
       !status.hasPermission ? '通信権限がないため自動判定は停止中です。' : !status.enabled || status.filterEnabled === false ? 'Jev判定または拡張全体がOFFのため自動判定は停止中です。' :
       status.autoRemaining === 0 ? '上限に達したため自動判定は停止中です。' : '自動判定はONです。';
     autoStatus.textContent = `${autoState} ${remaining}`;
+    quotaStatus.textContent = `使用 ${status.autoUsed} / 上限 ${status.autoLimit} 件 · 残り ${status.autoRemaining} 件（全タブ合計）`;
+    // Incoming counter updates and edits in another options tab must not erase
+    // an unfinished local input. The status always shows the saved value.
+    if (!quotaDirty) quotaInput.value = String(status.autoLimit);
     updateControls();
     return true;
   } catch {
@@ -293,6 +309,53 @@ async function refreshStatus() {
 function wasSuccessful(response) {
   return response && response.ok !== false && (response.ok === true || typeof response.hasKey === 'boolean');
 }
+
+function setQuotaFeedback(message, error = false) {
+  quotaFeedback.textContent = message;
+  quotaFeedback.dataset.state = error ? 'error' : 'ok';
+}
+quotaInput.addEventListener('input', () => {
+  quotaDirty = true;
+  setQuotaFeedback('未保存です。「上限を保存」を押すと反映します。');
+});
+quotaForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (busy || !status) return;
+  const limit = quotaInput.valueAsNumber;
+  if (!NyanPolicy.validAutoLimit(limit)) {
+    quotaDirty = true;
+    setQuotaFeedback('上限は1〜10,000件の整数で入力してください。保存していません。', true);
+    return;
+  }
+  setBusy(true);
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit });
+    if (response?.ok !== true) throw new Error('Quota save failed');
+    quotaDirty = false;
+    setQuotaFeedback('上限を保存しました。使用件数は変更していません。残り枠が増えると、自動判定ONの場合は未処理の投稿の送信が再開します。');
+  } catch {
+    setQuotaFeedback('保存結果を確認できませんでした。現在の上限を再確認してください。', true);
+  } finally {
+    await refreshStatus();
+    setBusy(false);
+  }
+});
+resetQuotaButton.addEventListener('click', async () => {
+  if (busy || !status) return;
+  const agreed = globalThis.confirm('全タブ共通の自動判定の使用件数を0に戻しますか？\n\nAPI側の料金・利用履歴・利用枠はリセットされません。進行中の判定はリセット前の予約として継続します。\n\n自動判定がONで接続可能な場合、未処理の投稿の送信が再開し、追加料金が発生する可能性があります。キー・ON/OFF設定・評価済みキャッシュは変更しません。');
+  if (!agreed) { setQuotaFeedback('リセットをキャンセルしました。使用件数は変更していません。'); return; }
+  setBusy(true);
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'NYAN_JEV_RESET_AUTO_COUNT' });
+    if (response?.ok !== true) throw new Error('Quota reset failed');
+    setQuotaFeedback('使用件数をリセットしました。自動判定が動作中の場合、その後の送信分が新しく加算されます。API側の料金・利用履歴は変更されません。');
+  } catch {
+    setQuotaFeedback('リセット結果を確認できませんでした。使用件数を再確認してください。', true);
+  } finally {
+    await refreshStatus();
+    setBusy(false);
+  }
+});
 
 keyForm.addEventListener('submit', async event => {
   event.preventDefault();
@@ -373,7 +436,7 @@ autoJudgeInput.addEventListener('change', async () => {
     }
     const stored = await chrome.storage.local.get({ autoJudgeConsentVersion: 0 });
     if (enabled && stored.autoJudgeConsentVersion !== AUTO_CONSENT_VERSION) {
-      const agreed = globalThis.confirm('自動判定を有効にしますか？\n\nHTMLの鍵・限定表示などを確認しますが、鍵マークがないことは公開の証明ではありません。検出漏れにより、非公開・限定公開の本文をTypeSafeのJevへ外部送信してしまう可能性があります。\n\n対象候補は投稿ごとの確認なしで自動送信され、API料金が発生する可能性があります。自動判定はこのブラウザセッションで全タブ合計200件までです。失敗・中止も上限を消費し、手動判定・接続テストは別です。\n\n送信済みデータは取り消せません。この同意はXや投稿者の利用許諾を代替しません。リスクと送信する権限を確認して、有効にする場合だけ「OK」を押してください。');
+      const agreed = globalThis.confirm(`自動判定を有効にしますか？\n\nHTMLの鍵・限定表示などを確認しますが、鍵マークがないことは公開の証明ではありません。検出漏れにより、非公開・限定公開の本文をTypeSafeのJevへ外部送信してしまう可能性があります。\n\n対象候補は投稿ごとの確認なしで自動送信され、API料金が発生する可能性があります。現在の自動判定上限は全タブ合計${status.autoLimit}件で、設定から変更・使用件数のリセットができます。失敗・中止も上限を消費し、手動判定・接続確認・入力文テストは別枠です。\n\n送信済みデータは取り消せません。この同意はXや投稿者の利用許諾を代替しません。リスクと送信する権限を確認して、有効にする場合だけ「OK」を押してください。`);
       if (!agreed) { setFeedback('自動判定は有効にしませんでした。'); return; }
     }
     await chrome.storage.local.set(enabled ? { autoJudgeEnabled: true, autoJudgeConsentVersion: AUTO_CONSENT_VERSION } : { autoJudgeEnabled: false });
@@ -423,7 +486,7 @@ refreshButton.addEventListener('click', async () => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.jevEnabled || changes.enabled || changes.autoJudgeEnabled || changes.jevConfigRevision)) void refreshStatus();
+  if (area === 'local' && (changes.jevEnabled || changes.enabled || changes.autoJudgeEnabled || changes.jevConfigRevision || changes.autoSessionLimit)) void refreshStatus();
   if (!displayBusy && area === 'local' && (changes.allowReveal || changes.scoreThreshold || changes.hideQuotes || changes.showUncertain)) void refreshDisplaySettings();
 });
 chrome.permissions.onRemoved.addListener(() => { void refreshStatus(); });

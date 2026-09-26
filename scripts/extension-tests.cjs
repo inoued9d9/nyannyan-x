@@ -89,6 +89,19 @@ async function main() {
     const options = await openingOptions;
     await options.waitForURL(optionsUrl);
     await options.waitForFunction(() => !document.getElementById('score-threshold').disabled && !document.getElementById('jev-enabled').disabled);
+    const quotaStatus = async (target, used, limit) => {
+      await target.waitForFunction(({ used, limit }) => {
+        const status = document.getElementById('auto-quota-status').textContent;
+        return status.includes(`使用 ${used} / 上限 ${limit} 件`) && status.includes(`残り ${Math.max(0, limit - used)} 件`);
+      }, { used, limit });
+      assert.match(await target.locator('#auto-quota-status').innerText(), /全タブ合計/);
+    };
+    const saveLimit = async (target, limit) => {
+      await target.locator('#auto-session-limit').fill(String(limit));
+      await target.locator('#save-auto-limit').click();
+      await target.waitForFunction(expected => !document.getElementById('save-auto-limit').disabled && document.getElementById('auto-session-limit').value === String(expected), limit);
+      await target.waitForFunction(async expected => (await chrome.storage.local.get('autoSessionLimit')).autoSessionLimit === expected, limit);
+    };
     await check('popup settings button opens the real extension options tab', async () => {
       assert.equal(options.url(), optionsUrl);
       assert.equal(await options.locator('#api-key').getAttribute('type'), 'password');
@@ -189,6 +202,70 @@ async function main() {
       await options.waitForFunction(() => document.getElementById('score-threshold').value === '65' && !document.getElementById('score-threshold').disabled);
       assert.equal(await options.evaluate(async () => (await chrome.storage.local.get('scoreThreshold')).scoreThreshold), 65);
       await options.screenshot({ path: path.join(artifacts, 'options-settings.png'), fullPage: true });
+    });
+
+    await check('quota settings work without a key or Jev; explicit saves preserve usage, synchronize tabs and protect drafts', async () => {
+      await quotaStatus(options, 0, 200);
+      assert.equal(await options.locator('#auto-session-limit').inputValue(), '200');
+      assert.equal(await options.locator('#auto-session-limit').getAttribute('min'), '1');
+      assert.equal(await options.locator('#auto-session-limit').getAttribute('max'), '10000');
+      assert.equal(await options.locator('#auto-session-limit').getAttribute('step'), '1');
+      await worker.evaluate(() => chrome.storage.session.set({ jevAutoSentCount: 199 }));
+      await quotaStatus(options, 199, 200);
+      await options.locator('#auto-session-limit').fill('301');
+      assert.equal((await options.evaluate(() => chrome.runtime.sendMessage({ type: 'NYAN_JEV_STATUS' }))).autoLimit, 200);
+      await saveLimit(options, 301);
+      await quotaStatus(options, 199, 301);
+      const status = await options.evaluate(() => chrome.runtime.sendMessage({ type: 'NYAN_JEV_STATUS' }));
+      assert.equal(status.autoUsed, 199);
+      assert.equal(status.autoRemaining, 102);
+      assert.equal(status.autoLimit, 301);
+      const second = await context.newPage();
+      await second.goto(optionsUrl);
+      await quotaStatus(second, 199, 301);
+      await second.locator('#auto-session-limit').fill('450');
+      await saveLimit(options, 350);
+      await quotaStatus(second, 199, 350);
+      assert.equal(await second.locator('#auto-session-limit').inputValue(), '450', 'Other tabs must not replace an unsaved quota draft');
+      await second.locator('#save-auto-limit').click();
+      await quotaStatus(options, 199, 450);
+      await options.waitForFunction(() => document.getElementById('auto-session-limit').value === '450');
+      await options.reload();
+      await quotaStatus(options, 199, 450);
+      assert.equal(await options.locator('#auto-session-limit').inputValue(), '450');
+      options.once('dialog', dialog => dialog.dismiss());
+      await options.locator('#reset-auto-count').click();
+      await quotaStatus(options, 199, 450);
+      assert.equal(await worker.evaluate(async () => (await chrome.storage.session.get('jevAutoSentCount')).jevAutoSentCount), 199);
+      let confirmation = '';
+      options.once('dialog', dialog => { confirmation = dialog.message(); return dialog.accept(); });
+      await options.locator('#reset-auto-count').click();
+      await quotaStatus(options, 0, 450);
+      await quotaStatus(second, 0, 450);
+      assert.match(confirmation, /料金|費用|課金/);
+      assert.equal(await options.locator('#jev-enabled').isChecked(), false);
+      assert.equal((await options.evaluate(() => chrome.runtime.sendMessage({ type: 'NYAN_JEV_STATUS' }))).hasKey, false);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 0);
+      await second.close();
+    });
+    await check('quota form rejects empty, fractional and out-of-range values, accepts boundaries, and lowering never resets usage', async () => {
+      for (const value of ['', 'NaN', 'Infinity', '0', '-1', '10001', '25.5']) {
+        await options.locator('#auto-session-limit').evaluate((input, invalid) => { input.value = invalid; input.dispatchEvent(new Event('input', { bubbles: true })); }, value);
+        await options.locator('#auto-quota-form').dispatchEvent('submit');
+        assert.equal(await options.evaluate(async () => (await chrome.storage.local.get('autoSessionLimit')).autoSessionLimit), 450);
+      }
+      await saveLimit(options, 10000);
+      await quotaStatus(options, 0, 10000);
+      await worker.evaluate(() => chrome.storage.session.set({ jevAutoSentCount: 7 }));
+      await quotaStatus(options, 7, 10000);
+      await saveLimit(options, 1);
+      await quotaStatus(options, 7, 1);
+      options.once('dialog', dialog => dialog.accept());
+      await options.locator('#reset-auto-count').click();
+      await quotaStatus(options, 0, 1);
+      await saveLimit(options, 200);
+      await quotaStatus(options, 0, 200);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 0);
     });
 
     await check('no-permission key save is denied; fake session key stays in trusted extension contexts and is deletable', async () => {
@@ -396,6 +473,56 @@ async function main() {
       await options.waitForFunction(() => document.getElementById('key-state-badge').dataset.state === 'missing');
       assert.equal(await options.locator('#post-error-status').isVisible(), false);
     });
+    await check('quota increase and confirmed reset resume only unprocessed posts; resetting keeps reserved work and cached results', async () => {
+      await worker.evaluate(async apiKey => {
+        chrome.permissions.contains = async () => true;
+        self.__nyanTestDelay = 1200;
+        self.__nyanTestReply = { model: 'jev-1.13.0', answers: {
+          discomfort: { type: 'score', score: 3, confidence: 1, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } }
+        } };
+        await chrome.storage.session.set({ jevApiKey: apiKey, jevKeyState: 'valid', jevKeyCheckedAt: 12345, jevAutoSentCount: 1 });
+      }, fakeKey);
+      await saveLimit(options, 1);
+      await quotaStatus(options, 1, 1);
+      await page.goto('https://x.com/search?q=quota-fixture');
+      await page.waitForSelector('#candidate > [data-nyan-ui="status"]');
+      await options.locator('#jev-enabled').check();
+      await options.waitForFunction(() => !document.getElementById('auto-judge-enabled').disabled);
+      options.once('dialog', dialog => dialog.accept());
+      await options.locator('#auto-judge-enabled').check();
+      await page.waitForFunction(() => document.querySelector('#candidate > [data-nyan-ui]')?.textContent.includes('上限'));
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 9);
+      await saveLimit(options, 2);
+      await quotaStatus(options, 2, 2);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 10);
+      assert.equal(await page.locator('#candidate[data-nyan-masked]').count(), 0, 'The final reservation is still in flight at reset');
+      options.once('dialog', dialog => dialog.accept());
+      await options.locator('#reset-auto-count').click();
+      await page.waitForSelector('#candidate[data-nyan-masked]');
+      await page.waitForSelector('#quoted[data-nyan-masked]');
+      await quotaStatus(options, 1, 2);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 11);
+      const payloads = await worker.evaluate(() => self.__nyanTestPayloads.slice(9));
+      assert.deepEqual(payloads.map(payload => payload.state.text), ['これは自作の架空テスト本文です。candidate', 'これは自作の架空テスト本文です。quoted']);
+      await page.evaluate(html => { document.getElementById('candidate').outerHTML = html; }, post('candidate'));
+      await page.waitForSelector('#candidate[data-nyan-masked]');
+      await saveLimit(options, 1);
+      await page.evaluate(html => document.querySelector('[data-testid="primaryColumn"]').insertAdjacentHTML('afterbegin', html), post('quota-extra'));
+      await page.waitForFunction(() => document.querySelector('#quota-extra > [data-nyan-ui]')?.textContent.includes('上限'));
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 11);
+      options.once('dialog', dialog => dialog.accept());
+      await options.locator('#reset-auto-count').click();
+      await page.waitForSelector('#quota-extra[data-nyan-masked]');
+      await quotaStatus(options, 1, 1);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 12);
+      await page.waitForTimeout(650);
+      assert.equal(await worker.evaluate(() => self.__nyanTestFetchAttempts.length), 12, 'Reset must not resend earlier scored bodies');
+      await options.locator('#auto-judge-enabled').uncheck();
+      await options.locator('#jev-enabled').uncheck();
+      await saveLimit(options, 200);
+      await options.locator('#delete-key').click();
+      await options.waitForFunction(() => document.getElementById('key-state-badge').dataset.state === 'missing');
+    });
     await check('search and reply routes inject; SPA and full DM routes are excluded', async () => {
       for (const route of ['/search?q=fixture', '/fictional/status/123']) {
         await page.goto(`https://x.com${route}`);
@@ -410,10 +537,10 @@ async function main() {
       assert.equal(await page.locator('#candidate > [data-testid="tweetText"]').isVisible(), true);
     });
 
-    await check('no runtime errors or external requests; only nine mocked API attempts', async () => {
+    await check('no runtime errors or external requests; only twelve mocked API attempts', async () => {
       await Promise.all(workerGuards);
       const attempts = (await Promise.all([...guardedWorkers].map(guarded => guarded.evaluate(() => self.__nyanTestFetchAttempts)))).flat();
-      assert.deepEqual(attempts, Array(9).fill('https://api.typesafe.ai/v1/systemone'));
+      assert.deepEqual(attempts, Array(12).fill('https://api.typesafe.ai/v1/systemone'));
       const payloads = await worker.evaluate(() => self.__nyanTestPayloads);
       for (const payload of payloads) assert.deepEqual(Object.keys(payload.questions), ['discomfort']);
       assert.deepEqual(externalRequests, []);

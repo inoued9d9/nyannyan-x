@@ -146,13 +146,15 @@ test('worker protects session storage and status reports booleans without secret
   assert.deepEqual(app.accessLevels, [{ area: 'session', accessLevel: 'TRUSTED_CONTEXTS' }]);
   for (const sender of [OPTIONS, POPUP, TIMELINE]) {
     const state = await app.send({ type: 'NYAN_JEV_STATUS' }, sender);
-    assert.deepEqual(Object.keys(state).sort(), ['autoJudgeEnabled', 'autoRemaining', 'enabled', 'filterEnabled', 'hasKey', 'hasPermission', 'keyCheckedAt', 'keyState', 'lastPostError', 'model']);
+    assert.deepEqual(Object.keys(state).sort(), ['autoJudgeEnabled', 'autoLimit', 'autoRemaining', 'autoUsed', 'enabled', 'filterEnabled', 'hasKey', 'hasPermission', 'keyCheckedAt', 'keyState', 'lastPostError', 'model']);
     assert.equal(state.hasKey, true);
     assert.equal(state.enabled, true);
     assert.equal(state.hasPermission, true);
     assert.equal(state.keyState, 'unchecked');
     assert.equal(state.keyCheckedAt, null);
     assert.equal(state.autoJudgeEnabled, false);
+    assert.equal(state.autoLimit, 200);
+    assert.equal(state.autoUsed, 0);
     assert.equal(state.autoRemaining, 200);
     assert.equal(state.lastPostError, null);
     assert.equal(JSON.stringify(state).includes(TEST_KEY), false);
@@ -548,8 +550,9 @@ test('removing automatic opt-in also aborts automatic work', async () => {
   assertSafeFailure(await automatic, true);
 });
 
-test('the 200-attempt automatic allowance is atomic across tabs and survives worker restarts', async () => {
-  const app = harness({ ...AUTO_SETTINGS, session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 199 } });
+test('the configured automatic allowance is atomic across tabs and survives worker restarts', async () => {
+  const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 317 },
+    session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 316 } });
   const results = await Promise.all([
     app.send(autoRequest(), TIMELINE),
     app.send(autoRequest(), { ...TIMELINE, tab: { id: 55 } })
@@ -557,13 +560,15 @@ test('the 200-attempt automatic allowance is atomic across tabs and survives wor
   assert.equal(results.filter(value => value.ok).length, 1);
   assert.equal(results.filter(value => !value.ok && !value.sent).length, 1);
   assert.equal(app.calls.length, 1);
-  assert.equal(app.stores.session.jevAutoSentCount, 200);
+  assert.equal(app.stores.session.jevAutoSentCount, 317);
   assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoRemaining, 0);
   assertSafeFailure(await app.send(autoRequest({ requestId: 'request-0003' })));
-  const restarted = harness({ ...AUTO_SETTINGS, session: { ...app.stores.session } });
+  const restarted = harness({ local: { ...app.stores.local }, session: { ...app.stores.session } });
   assertSafeFailure(await restarted.send(autoRequest()));
   assert.equal(restarted.calls.length, 0);
   assert.equal((await restarted.send({ type: 'NYAN_JEV_STATUS' })).autoRemaining, 0);
+  assert.equal((await restarted.send({ type: 'NYAN_JEV_STATUS' })).autoLimit, 317);
+  assert.equal((await restarted.send({ type: 'NYAN_JEV_STATUS' })).autoUsed, 317);
   // The automatic limit does not silently block the explicit manual workflow.
   assert.equal((await restarted.send(request())).ok, true);
 });
@@ -578,11 +583,13 @@ test('failed and cancelled automatic attempts consume budget; malformed counters
   await cancelled.chrome.storage.local.set({ autoJudgeEnabled: false });
   assertSafeFailure(await work, true);
   assert.equal(cancelled.stores.session.jevAutoSentCount, 1);
-  for (const jevAutoSentCount of [-1, 201, '0', null, NaN, 0.5]) {
-    const app = harness({ ...AUTO_SETTINGS, session: { ...AUTO_SETTINGS.session, jevAutoSentCount } });
+  for (const jevAutoSentCount of [-1, 10001, '0', null, NaN, 0.5, Infinity]) {
+    const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 317 },
+      session: { ...AUTO_SETTINGS.session, jevAutoSentCount } });
     assertSafeFailure(await app.send(autoRequest()));
     assert.equal(app.calls.length, 0);
     assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoRemaining, 0);
+    assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoUsed, 317);
   }
 });
 
@@ -591,6 +598,150 @@ test('quote blanket blocks automatic quote sending without consuming budget', as
   assertSafeFailure(await app.send(autoRequest({ isQuote: true })));
   assert.equal(app.stores.session.jevAutoSentCount, undefined);
   assert.equal((await app.send(autoRequest())).ok, true);
+});
+
+test('only options can change or reset the automatic allowance, without network access', async () => {
+  const app = harness({ ...AUTO_SETTINGS, session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 7 } });
+  for (const sender of [POPUP, TIMELINE, { ...OPTIONS, id: 'another-extension' },
+    { ...OPTIONS, url: extensionURL('demo.html') }, { ...TIMELINE, url: 'https://evil.example/options.html' }]) {
+    assertSafeFailure(await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 400 }, sender));
+    assertSafeFailure(await app.send({ type: 'NYAN_JEV_RESET_AUTO_COUNT' }, sender));
+  }
+  for (const limit of [undefined, null, '400', true, 0, -1, 10001, 2.5, NaN, Infinity, {}, []]) {
+    assertSafeFailure(await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit }, OPTIONS));
+  }
+  assert.equal(app.writes.length, 0);
+  for (const limit of [1, 10000, 400]) {
+    assert.equal((await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit }, OPTIONS)).ok, true);
+    assert.equal(app.stores.local.autoSessionLimit, limit);
+    assert.equal(app.stores.session.jevAutoSentCount, 7);
+    assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoLimit, limit);
+  }
+  assert.equal((await app.send({ type: 'NYAN_JEV_RESET_AUTO_COUNT' }, OPTIONS)).ok, true);
+  assert.equal(app.stores.session.jevAutoSentCount, 0);
+  assert.equal(app.calls.length, 0);
+  assert.ok(app.writes.some(write => write.area === 'local' && Number.isFinite(write.values.jevConfigRevision)));
+});
+
+test('invalid persisted limits fall back to 200 and never disable the allowance', async () => {
+  for (const autoSessionLimit of [undefined, null, '400', 0, -1, 10001, 1.5, NaN, Infinity]) {
+    const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit },
+      session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 200 } });
+    const state = await app.send({ type: 'NYAN_JEV_STATUS' });
+    assert.equal(state.autoLimit, 200);
+    assert.equal(state.autoUsed, 200);
+    assert.equal(state.autoRemaining, 0);
+    assert.equal((await app.send(autoRequest())).code, 'AUTO_LIMIT');
+    assert.equal(app.calls.length, 0);
+  }
+});
+
+test('lowering or raising the limit preserves the count, credentials and opt-in settings', async () => {
+  const app = harness({ ...AUTO_SETTINGS, session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 250 } });
+  assert.equal((await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 100 }, OPTIONS)).ok, true);
+  let state = await app.send({ type: 'NYAN_JEV_STATUS' });
+  assert.equal(state.autoLimit, 100);
+  assert.equal(state.autoUsed, 250);
+  assert.equal(state.autoRemaining, 0);
+  assert.equal((await app.send(autoRequest())).code, 'AUTO_LIMIT');
+  assert.equal(app.calls.length, 0);
+  assert.equal((await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 300 }, OPTIONS)).ok, true);
+  state = await app.send({ type: 'NYAN_JEV_STATUS' });
+  assert.equal(state.autoUsed, 250);
+  assert.equal(state.autoRemaining, 50);
+  assert.equal(state.keyState, 'valid');
+  assert.equal(state.keyCheckedAt, 12345);
+  assert.equal(state.enabled, true);
+  assert.equal(state.filterEnabled, true);
+  assert.equal(state.autoJudgeEnabled, true);
+  assert.equal(app.stores.session.jevApiKey, TEST_KEY);
+  assert.equal((await app.send(autoRequest())).ok, true);
+  assert.equal(app.stores.session.jevAutoSentCount, 251);
+});
+
+test('count reset needs no API key or permission and changes no settings or error state', async () => {
+  const lastError = { code: 'TIMEOUT', diagnostic: '', at: 12345 };
+  const app = harness({ permission: false, local: { enabled: false, jevEnabled: false, autoJudgeEnabled: false, autoSessionLimit: 317 },
+    session: { jevAutoSentCount: 200, jevLastPostError: lastError } });
+  assert.equal((await app.send({ type: 'NYAN_JEV_RESET_AUTO_COUNT' }, OPTIONS)).ok, true);
+  const state = await app.send({ type: 'NYAN_JEV_STATUS' });
+  assert.equal(state.autoLimit, 317);
+  assert.equal(state.autoUsed, 0);
+  assert.equal(state.autoRemaining, 317);
+  assert.equal(state.enabled, false);
+  assert.equal(state.filterEnabled, false);
+  assert.equal(state.autoJudgeEnabled, false);
+  assert.equal(state.keyState, 'missing');
+  assert.equal(state.hasPermission, false);
+  assert.deepEqual({ ...state.lastPostError }, lastError);
+  assert.equal(app.calls.length, 0);
+  assert.ok(app.writes.every(write => Object.keys(write.values).join() ===
+    (write.area === 'session' ? 'jevAutoSentCount' : 'jevConfigRevision')));
+});
+
+test('limit and reset transactions serialize with reservations across tabs', async () => {
+  const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 3 },
+    session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 2 } });
+  const results = await Promise.all([
+    app.send(autoRequest(), TIMELINE),
+    app.send({ type: 'NYAN_JEV_RESET_AUTO_COUNT' }, OPTIONS),
+    app.send(autoRequest(), { ...TIMELINE, tab: { id: 55 } }),
+    app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 1 }, OPTIONS)
+  ]);
+  assert.ok(results.every(result => result.ok));
+  assert.equal(app.calls.length, 2);
+  assert.equal(app.stores.session.jevAutoSentCount, 1);
+  assert.equal(app.stores.local.autoSessionLimit, 1);
+  assert.equal((await app.send(autoRequest())).code, 'AUTO_LIMIT');
+
+  const increase = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 1 },
+    session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 1 } });
+  const allowed = await Promise.all([
+    increase.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 2 }, OPTIONS),
+    increase.send(autoRequest())
+  ]);
+  assert.ok(allowed.every(result => result.ok));
+  assert.equal(increase.stores.session.jevAutoSentCount, 2);
+  assert.equal((await increase.send(autoRequest())).code, 'AUTO_LIMIT');
+});
+
+test('the last reserved request survives lowering and reset without being counted twice', async () => {
+  const waiting = deferred();
+  const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 317 },
+    session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 316 }, evaluate: () => waiting.promise });
+  const running = app.send(autoRequest());
+  await app.waitForCalls(1);
+  assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoRemaining, 0);
+  assert.equal((await app.send({ type: 'NYAN_JEV_SET_AUTO_LIMIT', limit: 1 }, OPTIONS)).ok, true);
+  assert.equal((await app.send({ type: 'NYAN_JEV_STATUS' })).autoUsed, 317);
+  assert.equal(app.calls[0].signal.aborted, false);
+  assert.equal((await app.send({ type: 'NYAN_JEV_RESET_AUTO_COUNT' }, OPTIONS)).ok, true);
+  assert.equal(app.calls[0].signal.aborted, false);
+  assert.equal(app.calls.length, 1);
+  assert.equal(app.stores.session.jevAutoSentCount, 0);
+  waiting.resolve({ ...RESULT });
+  assert.equal((await running).ok, true);
+  assert.equal(app.stores.session.jevAutoSentCount, 0);
+  const state = await app.send({ type: 'NYAN_JEV_STATUS' });
+  assert.equal(state.autoRemaining, 1);
+  assert.equal(state.keyState, 'valid');
+  assert.equal(state.keyCheckedAt, 12345);
+  const restarted = harness({ local: { ...app.stores.local }, session: { ...app.stores.session } });
+  assert.equal((await restarted.send({ type: 'NYAN_JEV_STATUS' })).autoUsed, 0);
+  assert.equal((await restarted.send(autoRequest())).ok, true);
+  assert.equal(restarted.stores.session.jevAutoSentCount, 1);
+});
+
+test('manual, fixed and custom tests do not consume the configured automatic allowance', async () => {
+  const app = harness({ ...AUTO_SETTINGS, local: { ...AUTO_SETTINGS.local, autoSessionLimit: 1 },
+    session: { ...AUTO_SETTINGS.session, jevAutoSentCount: 1 } });
+  assert.equal((await app.send(request())).ok, true);
+  assert.equal((await app.send({ type: 'NYAN_JEV_TEST_SAMPLE' }, OPTIONS)).ok, true);
+  assert.equal((await app.send({ type: 'NYAN_JEV_TEST_TEXT', text: EXAMPLE_TEXT }, OPTIONS)).ok, true);
+  assert.equal(app.calls.length, 3);
+  assert.equal(app.stores.session.jevAutoSentCount, 1);
+  assert.equal((await app.send(autoRequest())).code, 'AUTO_LIMIT');
+  assert.equal(app.calls.length, 3);
 });
 
 test('saving a key sends exactly one fixed sample with Jev OFF and publishes verification state', async () => {

@@ -33,6 +33,8 @@ textarea { width: 100%; resize: vertical; border: 1px solid #93b8a7; border-radi
 input[type="range"] { flex: 1 1 auto; min-width: 60px; margin: 0; accent-color: #23795d; }
 input[type="number"] { flex: 0 0 70px; width: 70px; border: 1px solid #93b8a7; border-radius: 7px; padding: 6px 8px; color: #183a31; background: white; font: inherit; }
 .threshold-unit { font-size: 12px; color: #536b61; white-space: nowrap; }
+.quota-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+#auto-session-limit { flex-basis: 110px; width: 110px; }
 .reveal-toggle { margin-top: 16px; font-size: 13px; }
 .inline-feedback { min-height: 1.65em; margin: 8px 0 0; font-size: 12px; color: #536b61; }
 .inline-feedback[data-state="error"] { color: #8c4219; }

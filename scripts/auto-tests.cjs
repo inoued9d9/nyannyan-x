@@ -228,6 +228,53 @@ async function main() {
       assert.equal(await original(2).isVisible(), false);
       assert.match(await page.locator('#p2 > [data-nyan-ui]').innerText(), /上限/);
     });
+    await check('raising the quota above 200 resumes held posts without cancelling pending work or forgetting scores', async () => {
+      await page.evaluate(() => filter.setAutoRemaining(500));
+      await page.waitForFunction(() => calls.length === 2);
+      assert.equal(await page.evaluate(() => filter.getStats().autoRemaining), 500);
+      await page.evaluate(() => filter.setAutoRemaining(1000));
+      assert.equal(await page.evaluate(() => calls[1].signal.aborted), false);
+      await page.evaluate(() => pending.shift()({ ok: true, sent: true, result: makeScore() }));
+      await page.waitForFunction(() => filter.getStats().evaluated === 2);
+      await page.evaluate(html => { document.querySelector('main > div').innerHTML = html; }, post(1) + post(2));
+      await page.waitForSelector('#p2[data-nyan-masked]');
+      await page.waitForTimeout(650);
+      assert.equal(await page.evaluate(() => calls.length), 2);
+      assert.equal(await page.evaluate(() => filter.getStats().evaluated), 2);
+    });
+    await check('only proven unsent quota denials are retried when remaining capacity returns', async () => {
+      await setup(post(1), { response: 'pending' });
+      await page.waitForFunction(() => calls.length === 1);
+      await page.evaluate(() => {
+        filter.setAutoRemaining(0);
+        pending.shift()({ ok: false, sent: false, code: 'AUTO_LIMIT' });
+      });
+      await page.waitForFunction(() => filter.getStats().autoPausedCode === 'AUTO_LIMIT');
+      await page.evaluate(() => { filter.setAutoRemaining(0); filter.refresh(); });
+      await page.waitForTimeout(650);
+      assert.equal(await page.evaluate(() => calls.length), 1);
+      await page.evaluate(() => { window.responseMode = 'success'; filter.setAutoRemaining(750); });
+      await page.waitForSelector('#p1[data-nyan-masked]');
+      assert.equal(await page.evaluate(() => calls.length), 2);
+      assert.equal(await page.evaluate(() => filter.getStats().autoPausedCode), '');
+    });
+    for (const [code, sent] of [['AUTO_LIMIT', true], ['AUTO_LIMIT', undefined], ['RATE_LIMIT', true], ['CANCELLED', false], ['NETWORK', true]]) {
+      await check(`quota reset never retries ${code} with sent=${String(sent)}`, async () => {
+        await setup(post(1), { response: 'pending' });
+        await page.waitForFunction(() => calls.length === 1);
+        await page.evaluate(({ code, sent }) => pending.shift()({ ok: false, sent, code }), { code, sent });
+        await page.waitForFunction(expected => filter.getStats().autoPausedCode === expected, code);
+        await page.evaluate(html => {
+          filter.setAutoRemaining(1000);
+          document.querySelector('main > div').insertAdjacentHTML('beforeend', html);
+        }, post(2));
+        await page.waitForTimeout(650);
+        assert.equal(await page.evaluate(() => calls.length), 1);
+        assert.equal(await page.evaluate(() => filter.getStats().evaluated), 0);
+        assert.equal(await original(1).isVisible(), false);
+        assert.equal(await original(2).isVisible(), false);
+      });
+    }
     await check('two requests can run in parallel, but a third waits for capacity', async () => {
       await setup(post(1) + post(2) + post(3), { response: 'pending' });
       await page.waitForFunction(() => calls.length === 2);
